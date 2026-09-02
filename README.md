@@ -1,5 +1,3 @@
-# telegram-spaced-repetition-bot
-A Python Telegram bot for automated language learning using a custom spaced repetition system.
 # Telegram Spaced Repetition Bot 🇵🇱
 
 A Python-based Telegram bot designed to automate language learning through a custom spaced repetition system. Built to streamline the acquisition of Polish vocabulary, transitioning from a static local script to a dynamic, cloud-hosted conversational interface.
