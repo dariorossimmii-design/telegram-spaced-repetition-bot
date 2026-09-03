@@ -3,10 +3,11 @@ import json
 import os
 import random
 import unicodedata
-from telebot.types import ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telebot.types import ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
+from gtts import gTTS
 
 # INSERISCI QUI IL TUO TOKEN
-TOKEN = 'INSERT_TOKEN_HERE'
+TOKEN = 'INSERT_TOKEN'
 bot = telebot.TeleBot(TOKEN)
 
 CSV_FILE = "vocaboli_pl.csv"
@@ -118,7 +119,6 @@ def ask_next_word(chat_id):
     if not session or session["current_idx"] >= len(session["batch"]):
         if session: save_progress(session["db"])
 
-        # Invece di fermarsi, chiede se vuoi continuare con le stesse lezioni
         markup = ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
         markup.add("Sì", "No")
         msg = bot.send_message(chat_id, "Round completato! Dati salvati.\nVuoi fare un altro round con queste lezioni?", reply_markup=markup)
@@ -157,12 +157,15 @@ def check_mcq(message):
 
     session = sessions[chat_id]
     pl = session["last_pl"]
+    
+    markup_audio = InlineKeyboardMarkup()
+    markup_audio.add(InlineKeyboardButton("🔊 Ascolta pronuncia", callback_data=f"audio_{pl}"))
 
     if message.text.strip() == pl:
-        bot.send_message(chat_id, "🟢 Corretto.")
+        bot.send_message(chat_id, "🟢 Corretto.", reply_markup=markup_audio)
         session["db"][pl]["level"] += 1
     else:
-        bot.send_message(chat_id, f"🔴 Errato. La risposta era: {pl}")
+        bot.send_message(chat_id, f"🔴 Errato. La risposta era: {pl}", reply_markup=markup_audio)
 
     session["current_idx"] += 1
     ask_next_word(chat_id)
@@ -176,18 +179,21 @@ def check_typing(message):
 
     session = sessions[chat_id]
     pl = session["last_pl"]
+    
+    markup_audio = InlineKeyboardMarkup()
+    markup_audio.add(InlineKeyboardButton("🔊 Ascolta pronuncia", callback_data=f"audio_{pl}"))
 
     is_exact, status = check_answer_strict(message.text, pl)
     if is_exact:
-        bot.send_message(chat_id, "🟢 Corretto.")
+        bot.send_message(chat_id, "🟢 Corretto.", reply_markup=markup_audio)
         session["db"][pl]["level"] += 1
         session["current_idx"] += 1
         ask_next_word(chat_id)
     else:
         if status == "diacritici":
-            bot.send_message(chat_id, f"🟠 Errore sui diacritici! Scritto: '{message.text}', Esatto: '{pl}'")
+            bot.send_message(chat_id, f"🟠 Errore sui diacritici! Scritto: '{message.text}', Esatto: '{pl}'", reply_markup=markup_audio)
         else:
-            bot.send_message(chat_id, f"🔴 Errato. Esatto: {pl}")
+            bot.send_message(chat_id, f"🔴 Errato. Esatto: {pl}", reply_markup=markup_audio)
 
         session["db"][pl]["level"] = 0
 
@@ -207,11 +213,26 @@ def check_override(message):
 
     session["current_idx"] += 1
     ask_next_word(chat_id)
-# --- NUOVA SEZIONE: AGGIUNTA VOCABOLI A CICLO CONTINUO ---
 
+# --- SEZIONE AUDIO ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith('audio_'))
+def send_pronunciation(call):
+    pl_word = call.data.replace('audio_', '')
+    bot.send_chat_action(call.message.chat.id, 'record_voice')
+    try:
+        tts = gTTS(text=pl_word, lang='pl')
+        audio_file = f"temp_{call.message.chat.id}.ogg"
+        tts.save(audio_file)
+        with open(audio_file, 'rb') as f:
+            bot.send_voice(call.message.chat.id, f)
+        os.remove(audio_file)
+    except Exception as e:
+        bot.send_message(call.message.chat.id, "Errore nella generazione dell'audio.")
+    bot.answer_callback_query(call.id)
+
+# --- SEZIONE AGGIUNTA VOCABOLI ---
 @bot.message_handler(commands=['aggiungi', 'add'])
 def start_add_vocab(message):
-    """Avvia la procedura per inserire più vocaboli in una singola lezione."""
     msg = bot.send_message(
         message.chat.id,
         "📝 **Inserimento nuovi vocaboli**\n\nA quale **lezione** vuoi aggiungerli? (es. 20, 21, extra):",
@@ -232,7 +253,7 @@ def process_add_lesson(message):
 
     msg = bot.send_message(
         chat_id,
-        f"Perfetto, aggiungiamo alla lezione **{lezione}**.\n\nScrivi il termine in **polacco**:\n*(Oppure digita 'q' in qualsiasi momento per terminare l'inserimento)*",
+        f"Perfetto, aggiungiamo alla lezione **{lezione}**.\n\nScrivi il termine in **polacco**:\n*(Oppure digita 'q' in qualsiasi momento per terminare)*",
         parse_mode="Markdown"
     )
     bot.register_next_step_handler(msg, process_add_pl)
@@ -241,16 +262,13 @@ def process_add_pl(message):
     chat_id = message.chat.id
     pl = message.text.strip()
 
-    # Condizione di uscita dal loop
     if pl.lower() == 'q':
         bot.send_message(chat_id, "Inserimento terminato. Usa /quiz per studiare.")
         return
 
-    # --- CONTROLLO DUPLICATI ---
     db = load_data()
     duplicato = None
 
-    # Cerca la parola nel database ignorando le maiuscole/minuscole
     for parola_esistente in db.keys():
         if parola_esistente.lower() == pl.lower():
             duplicato = parola_esistente
@@ -263,13 +281,10 @@ def process_add_pl(message):
             f"⚠️ **Attenzione!**\nIl termine **{duplicato}** esiste già nella **Lezione {dati['lezione']}** (Traduzione: *{dati['it']}*).\n\nScrivi un **altro termine in polacco** (oppure 'q' per chiudere):",
             parse_mode="Markdown"
         )
-        # Rimanda l'utente a inserire una nuova parola polacca
         bot.register_next_step_handler(msg, process_add_pl)
         return
-    # ---------------------------
 
     sessions[chat_id]["new_pl"] = pl
-
     msg = bot.send_message(chat_id, f"Scrivi la traduzione in **italiano** per '{pl}':", parse_mode="Markdown")
     bot.register_next_step_handler(msg, process_add_it)
 
@@ -285,33 +300,28 @@ def process_add_it(message):
     lezione = sessions[chat_id].get("add_lesson")
 
     try:
-        # Salvataggio nel file CSV
         with open(CSV_FILE, "a", encoding="utf-8") as f:
             f.write(f"\n{pl},{it},{lezione}")
 
-        # Messaggio di conferma e riavvio del loop per il termine successivo
         msg = bot.send_message(
             chat_id,
             f"✅ Salvato: **{pl}** = **{it}**\n\nScrivi il **prossimo termine in polacco** (oppure 'q' per chiudere):",
             parse_mode="Markdown"
         )
-
-        # Qui avviene la magia del loop: rimandiamo la funzione a process_add_pl
         bot.register_next_step_handler(msg, process_add_pl)
 
     except Exception as e:
         bot.send_message(chat_id, f"Errore durante il salvataggio: {e}")
-# --- NUOVA SEZIONE: RESET DEI PROGRESSI ---
 
+# --- SEZIONE RESET PROGRESSI ---
 @bot.message_handler(commands=['reset'])
 def confirm_reset(message):
-    """Chiede conferma prima di azzerare il file dei progressi."""
     markup = ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
     markup.add("Sì, azzera tutto", "Annulla")
-
+    
     msg = bot.send_message(
-        message.chat.id,
-        "⚠️ **ATTENZIONE** ⚠️\nVuoi davvero azzerare tutti i tuoi progressi? Tutti i vocaboli torneranno al Livello 0.\n\nQuesta azione non è reversibile.",
+        message.chat.id, 
+        "⚠️ **ATTENZIONE** ⚠️\nVuoi davvero azzerare tutti i tuoi progressi? Tutti i vocaboli torneranno al Livello 0.\n\nQuesta azione non è reversibile.", 
         reply_markup=markup,
         parse_mode="Markdown"
     )
@@ -320,14 +330,14 @@ def confirm_reset(message):
 def execute_reset(message):
     chat_id = message.chat.id
     risposta = message.text.strip()
-
+    
     if risposta == "Sì, azzera tutto":
         try:
             if os.path.exists(PROGRESS_FILE):
                 os.remove(PROGRESS_FILE)
             bot.send_message(
-                chat_id,
-                "🗑️ **Progressi azzerati con successo.**\nTutti i vocaboli sono tornati al Livello 0. Scrivi /quiz per ricominciare.",
+                chat_id, 
+                "🗑️ **Progressi azzerati con successo.**\nTutti i vocaboli sono tornati al Livello 0. Scrivi /quiz per ricominciare.", 
                 reply_markup=ReplyKeyboardRemove(),
                 parse_mode="Markdown"
             )
@@ -335,10 +345,11 @@ def execute_reset(message):
             bot.send_message(chat_id, f"Errore durante l'eliminazione: {e}", reply_markup=ReplyKeyboardRemove())
     else:
         bot.send_message(
-            chat_id,
-            "Operazione annullata. I tuoi progressi sono salvi.",
+            chat_id, 
+            "Operazione annullata. I tuoi progressi sono salvi.", 
             reply_markup=ReplyKeyboardRemove()
         )
+
 if __name__ == "__main__":
     print("Bot in ascolto... Premi Ctrl+C nel terminale per spegnerlo.")
     bot.infinity_polling()
