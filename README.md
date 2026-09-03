@@ -9,6 +9,7 @@ A Python-based Telegram bot designed to automate language learning through a cus
 * **Typo Override:** Includes a manual override mechanism to forgive minor typing or diacritic errors without penalizing the learning progression.
 * **Progress Reset:** Safely wipe current learning data using the `/reset` command with a built-in confirmation failsafe.
 * **Cloud Ready:** Structured for continuous deployment on cloud platforms (e.g., PythonAnywhere) via infinite polling.
+* **Audio Pronunciation**: Integrated Google Text-to-Speech (gTTS) to provide on-demand audio playback of Polish vocabulary via inline buttons.
 
 **Tech Stack**
 * Python 3.x
