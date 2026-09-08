@@ -3,11 +3,11 @@ import json
 import os
 import random
 import unicodedata
-from telebot.types import ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 from gtts import gTTS
+from telebot.types import ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 
-# INSERISCI QUI IL TUO TOKEN
-TOKEN = 'INSERT_TOKEN'
+# Sostituisci con il tuo token prima di avviare in locale
+TOKEN = '8618274395:AAHdzgR07XPIM4C5YmEBl2SgOtyslfKV6fA'
 bot = telebot.TeleBot(TOKEN)
 
 CSV_FILE = "vocaboli_pl.csv"
@@ -48,6 +48,14 @@ def check_answer_strict(user_input, correct_answer):
     if remove_diacritics(user_input) == remove_diacritics(correct_answer): return False, "diacritici"
     return False, "errato"
 
+def get_audio_markup(pl_word):
+    """Genera il pulsante inline per la pronuncia audio."""
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("🔊 Ascolta pronuncia", callback_data=f"audio_{pl_word}"))
+    return markup
+
+# --- SEZIONE QUIZ E STUDIO ---
+
 @bot.message_handler(commands=['start', 'quiz'])
 def start_quiz(message):
     db = load_data()
@@ -85,11 +93,7 @@ def process_lesson(message, db):
 
 def setup_session(message, db, selected):
     skip_mcq = (message.text.strip().lower() == 'no')
-
-    sessions[message.chat.id] = {
-        "db": db, "selected": selected, "skip_mcq": skip_mcq
-    }
-
+    sessions[message.chat.id] = {"db": db, "selected": selected, "skip_mcq": skip_mcq}
     start_new_round(message.chat.id)
 
 def start_new_round(chat_id):
@@ -157,15 +161,12 @@ def check_mcq(message):
 
     session = sessions[chat_id]
     pl = session["last_pl"]
-    
-    markup_audio = InlineKeyboardMarkup()
-    markup_audio.add(InlineKeyboardButton("🔊 Ascolta pronuncia", callback_data=f"audio_{pl}"))
 
     if message.text.strip() == pl:
-        bot.send_message(chat_id, "🟢 Corretto.", reply_markup=markup_audio)
+        bot.send_message(chat_id, "🟢 Corretto.", reply_markup=get_audio_markup(pl))
         session["db"][pl]["level"] += 1
     else:
-        bot.send_message(chat_id, f"🔴 Errato. La risposta era: {pl}", reply_markup=markup_audio)
+        bot.send_message(chat_id, f"🔴 Errato. La risposta era: {pl}", reply_markup=get_audio_markup(pl))
 
     session["current_idx"] += 1
     ask_next_word(chat_id)
@@ -179,23 +180,18 @@ def check_typing(message):
 
     session = sessions[chat_id]
     pl = session["last_pl"]
-    
-    markup_audio = InlineKeyboardMarkup()
-    markup_audio.add(InlineKeyboardButton("🔊 Ascolta pronuncia", callback_data=f"audio_{pl}"))
 
     is_exact, status = check_answer_strict(message.text, pl)
     if is_exact:
-        bot.send_message(chat_id, "🟢 Corretto.", reply_markup=markup_audio)
+        bot.send_message(chat_id, "🟢 Corretto.", reply_markup=get_audio_markup(pl))
         session["db"][pl]["level"] += 1
         session["current_idx"] += 1
         ask_next_word(chat_id)
     else:
         if status == "diacritici":
-            bot.send_message(chat_id, f"🟠 Errore sui diacritici! Scritto: '{message.text}', Esatto: '{pl}'", reply_markup=markup_audio)
+            bot.send_message(chat_id, f"🟠 Errore sui diacritici! Scritto: '{message.text}', Esatto: '{pl}'")
         else:
-            bot.send_message(chat_id, f"🔴 Errato. Esatto: {pl}", reply_markup=markup_audio)
-
-        session["db"][pl]["level"] = 0
+            bot.send_message(chat_id, f"🔴 Errato. Esatto: {pl}")
 
         markup = ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
         markup.add("S", "No")
@@ -209,28 +205,16 @@ def check_override(message):
 
     if message.text.strip().lower() == 's':
         session["db"][pl]["level"] += 1
-        bot.send_message(chat_id, "✅ Forzatura applicata.")
+        bot.send_message(chat_id, "✅ Forzatura applicata.", reply_markup=get_audio_markup(pl))
+    else:
+        session["db"][pl]["level"] = 0
+        bot.send_message(chat_id, "❌ Errore confermato.", reply_markup=get_audio_markup(pl))
 
     session["current_idx"] += 1
     ask_next_word(chat_id)
 
-# --- SEZIONE AUDIO ---
-@bot.callback_query_handler(func=lambda call: call.data.startswith('audio_'))
-def send_pronunciation(call):
-    pl_word = call.data.replace('audio_', '')
-    bot.send_chat_action(call.message.chat.id, 'record_voice')
-    try:
-        tts = gTTS(text=pl_word, lang='pl')
-        audio_file = f"temp_{call.message.chat.id}.ogg"
-        tts.save(audio_file)
-        with open(audio_file, 'rb') as f:
-            bot.send_voice(call.message.chat.id, f)
-        os.remove(audio_file)
-    except Exception as e:
-        bot.send_message(call.message.chat.id, "Errore nella generazione dell'audio.")
-    bot.answer_callback_query(call.id)
+# --- SEZIONE INSERIMENTO VOCABOLI ---
 
-# --- SEZIONE AGGIUNTA VOCABOLI ---
 @bot.message_handler(commands=['aggiungi', 'add'])
 def start_add_vocab(message):
     msg = bot.send_message(
@@ -253,7 +237,7 @@ def process_add_lesson(message):
 
     msg = bot.send_message(
         chat_id,
-        f"Perfetto, aggiungiamo alla lezione **{lezione}**.\n\nScrivi il termine in **polacco**:\n*(Oppure digita 'q' in qualsiasi momento per terminare)*",
+        f"Perfetto, aggiungiamo alla lezione **{lezione}**.\n\nScrivi il termine in **polacco**:\n*(Oppure digita 'q' per terminare)*",
         parse_mode="Markdown"
     )
     bot.register_next_step_handler(msg, process_add_pl)
@@ -313,42 +297,107 @@ def process_add_it(message):
     except Exception as e:
         bot.send_message(chat_id, f"Errore durante il salvataggio: {e}")
 
-# --- SEZIONE RESET PROGRESSI ---
+# --- SEZIONE RESET ---
+
 @bot.message_handler(commands=['reset'])
-def confirm_reset(message):
-    markup = ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
-    markup.add("Sì, azzera tutto", "Annulla")
-    
+def start_reset(message):
+    db = load_data()
+    if not db:
+        bot.send_message(message.chat.id, "Nessun database trovato.")
+        return
+
+    lezioni_uniche = list(set(v["lezione"] for v in db.values()))
+    lezioni_disp = sorted(lezioni_uniche, key=lambda x: (0, int(x)) if x.isdigit() else (1, x))
+
     msg = bot.send_message(
-        message.chat.id, 
-        "⚠️ **ATTENZIONE** ⚠️\nVuoi davvero azzerare tutti i tuoi progressi? Tutti i vocaboli torneranno al Livello 0.\n\nQuesta azione non è reversibile.", 
-        reply_markup=markup,
+        message.chat.id,
+        f"⚠️ **RESET PROGRESSI** ⚠️\n\nLezioni disponibili: {', '.join(lezioni_disp)}\n\nQuali lezioni vuoi azzerare? (es. 1, 1,3 oppure 'tutte').\nScrivi 'q' per annullare.",
+        reply_markup=ReplyKeyboardRemove(),
         parse_mode="Markdown"
     )
+    bot.register_next_step_handler(msg, confirm_reset_lessons, db)
+
+def confirm_reset_lessons(message, db):
+    scelta = message.text.strip().lower()
+    chat_id = message.chat.id
+
+    if scelta == 'q':
+        bot.send_message(chat_id, "Operazione di reset annullata.")
+        return
+
+    if scelta == 'tutte':
+        selected_lessons = "TUTTE"
+    else:
+        scelte = [s.strip() for s in scelta.split(',')]
+        valid_lessons = list(set([l for l in scelte if any(v["lezione"] == l for v in db.values())]))
+
+        if not valid_lessons:
+            bot.send_message(chat_id, "Nessuna lezione valida trovata. Reset annullato.")
+            return
+        selected_lessons = valid_lessons
+
+    sessions[chat_id] = {"reset_lessons": selected_lessons, "db": db}
+
+    markup = ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+    markup.add("Sì, confermo", "Annulla")
+
+    if selected_lessons == "TUTTE":
+        testo = "Vuoi davvero azzerare **TUTTI** i tuoi progressi?\nQuesta azione non è reversibile."
+    else:
+        testo = f"Vuoi davvero azzerare i progressi per le lezioni: **{', '.join(selected_lessons)}**?\nTutti i vocaboli di queste lezioni torneranno al Livello 0."
+
+    msg = bot.send_message(chat_id, testo, reply_markup=markup, parse_mode="Markdown")
     bot.register_next_step_handler(msg, execute_reset)
 
 def execute_reset(message):
     chat_id = message.chat.id
     risposta = message.text.strip()
-    
-    if risposta == "Sì, azzera tutto":
-        try:
+    session = sessions.get(chat_id, {})
+
+    if risposta == "Sì, confermo" and session:
+        selected_lessons = session.get("reset_lessons")
+        db = session.get("db")
+
+        if selected_lessons == "TUTTE":
             if os.path.exists(PROGRESS_FILE):
                 os.remove(PROGRESS_FILE)
+            bot.send_message(chat_id, "🗑️ **Tutti i progressi sono stati azzerati.**\nUsa /quiz per ricominciare.", reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
+        else:
+            modificati = 0
+            for pl, data in db.items():
+                if data["lezione"] in selected_lessons:
+                    db[pl]["level"] = 0
+                    modificati += 1
+
+            save_progress(db)
             bot.send_message(
-                chat_id, 
-                "🗑️ **Progressi azzerati con successo.**\nTutti i vocaboli sono tornati al Livello 0. Scrivi /quiz per ricominciare.", 
+                chat_id,
+                f"🗑️ **Progressi azzerati per le lezioni: {', '.join(selected_lessons)}**.\n({modificati} vocaboli ripristinati al Livello 0).",
                 reply_markup=ReplyKeyboardRemove(),
                 parse_mode="Markdown"
             )
-        except Exception as e:
-            bot.send_message(chat_id, f"Errore durante l'eliminazione: {e}", reply_markup=ReplyKeyboardRemove())
     else:
-        bot.send_message(
-            chat_id, 
-            "Operazione annullata. I tuoi progressi sono salvi.", 
-            reply_markup=ReplyKeyboardRemove()
-        )
+        bot.send_message(chat_id, "Operazione annullata. I tuoi progressi sono salvi.", reply_markup=ReplyKeyboardRemove())
+
+# --- GESTORE AUDIO (CALLBACK) ---
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('audio_'))
+def send_pronunciation(call):
+    pl_word = call.data.replace('audio_', '')
+    bot.send_chat_action(call.message.chat.id, 'record_voice')
+
+    try:
+        tts = gTTS(text=pl_word, lang='pl')
+        audio_file = f"temp_{call.message.chat.id}.ogg"
+        tts.save(audio_file)
+
+        with open(audio_file, 'rb') as f:
+            bot.send_voice(call.message.chat.id, f)
+        os.remove(audio_file)
+    except Exception as e:
+        bot.send_message(call.message.chat.id, "Errore nella generazione dell'audio.")
+
+    bot.answer_callback_query(call.id)
 
 if __name__ == "__main__":
     print("Bot in ascolto... Premi Ctrl+C nel terminale per spegnerlo.")
