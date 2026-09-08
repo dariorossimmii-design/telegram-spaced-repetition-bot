@@ -6,8 +6,8 @@ import unicodedata
 from gtts import gTTS
 from telebot.types import ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 
-# Sostituisci con il tuo token prima di avviare in locale
-TOKEN = '8618274395:AAHdzgR07XPIM4C5YmEBl2SgOtyslfKV6fA'
+# The token is securely fetched from the environment variables
+TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', 'YOUR_TOKEN_HERE')
 bot = telebot.TeleBot(TOKEN)
 
 CSV_FILE = "vocaboli_pl.csv"
