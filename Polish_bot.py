@@ -392,67 +392,121 @@ def execute_reset(message):
 def start_ai_challenge(message):
     db = load_data()
     
-    parole_conosciute = [data["it"] for pl, data in db.items() if data["level"] >= 2]
+    # Ora estraiamo sia la parola in polacco che la traduzione in italiano
+    parole_conosciute = [(pl, data["it"]) for pl, data in db.items() if data["level"] >= 2]
     
     if len(parole_conosciute) < 3:
         bot.send_message(message.chat.id, "⚠️ Non hai ancora abbastanza vocaboli al Livello 2 o 3. Fai un po' di /quiz prima di sfidare l'AI!")
         return
         
-    bot.send_message(message.chat.id, "🤖 Generazione della sfida in corso...")
-    bot.send_chat_action(message.chat.id, 'typing')
+    sessions[message.chat.id] = {"parole_conosciute": parole_conosciute}
+    
+    markup = ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+    markup.add("PL ➡️ IT (Facile)", "IT ➡️ PL (Difficile)")
+    
+    msg = bot.send_message(
+        message.chat.id, 
+        "Scegli la direzione della traduzione:\n\n"
+        "• **PL ➡️ IT**: L'AI scrive in polacco, tu traduci in italiano.\n"
+        "• **IT ➡️ PL**: L'AI scrive in italiano, tu traduci in polacco.",
+        reply_markup=markup,
+        parse_mode="Markdown"
+    )
+    bot.register_next_step_handler(msg, process_sfida_direction)
+
+def process_sfida_direction(message):
+    chat_id = message.chat.id
+    scelta = message.text.strip()
+    session = sessions.get(chat_id, {})
+    
+    if "PL" not in scelta and "IT" not in scelta:
+        bot.send_message(chat_id, "Scelta non valida. Sfida annullata.", reply_markup=ReplyKeyboardRemove())
+        return
+        
+    direzione = "pl_to_it" if scelta.startswith("PL") else "it_to_pl"
+    parole_conosciute = session.get("parole_conosciute", [])
+    
+    bot.send_message(chat_id, "🤖 Generazione della sfida in corso...", reply_markup=ReplyKeyboardRemove())
+    bot.send_chat_action(chat_id, 'typing')
     
     vocaboli_sfida = random.sample(parole_conosciute, 3)
     
-    prompt_generazione = (
-        f"Agisci come un insegnante di polacco per uno studente principiante (livello A1). "
-        f"Crea una singola frase molto semplice in italiano (massimo 6-8 parole) che includa "
-        f"obbligatoriamente questi tre concetti: {', '.join(vocaboli_sfida)}. "
-        f"Rispondi fornendo la frase in italiano sulla prima riga. "
-        f"Dalla seconda riga in poi, crea un '📌 Aiuto Vocabolario' in cui fornisci la traduzione in polacco "
-        f"esclusivamente per i termini extra che hai usato (verbi ausiliari, preposizioni, altri sostantivi). "
-        f"Non tradurre i tre concetti obbligatori che lo studente deve già conoscere."
-    )
-    
+    if direzione == "pl_to_it":
+        concetti = [pl for pl, it in vocaboli_sfida]
+        prompt_generazione = (
+            f"Agisci come un insegnante di polacco per uno studente principiante (livello A1). "
+            f"Crea una singola frase molto semplice in polacco (massimo 6-8 parole) che includa "
+            f"obbligatoriamente queste tre parole: {', '.join(concetti)}. "
+            f"Rispondi fornendo la frase in polacco sulla prima riga. "
+            f"Dalla seconda riga in poi, crea un '📌 Aiuto Vocabolario' in cui fornisci la traduzione in italiano "
+            f"esclusivamente per i termini extra che hai usato (verbi ausiliari, preposizioni, altri sostantivi). "
+            f"Non tradurre i tre concetti obbligatori."
+        )
+        testo_sfida = "Traduci in **italiano** questa frase:"
+    else:
+        concetti = [it for pl, it in vocaboli_sfida]
+        prompt_generazione = (
+            f"Agisci come un insegnante di polacco per uno studente principiante (livello A1). "
+            f"Crea una singola frase molto semplice in italiano (massimo 6-8 parole) che includa "
+            f"obbligatoriamente questi tre concetti: {', '.join(concetti)}. "
+            f"Rispondi fornendo la frase in italiano sulla prima riga. "
+            f"Dalla seconda riga in poi, crea un '📌 Aiuto Vocabolario' in cui fornisci la traduzione in polacco "
+            f"esclusivamente per i termini extra che hai usato. "
+            f"Non tradurre i tre concetti obbligatori."
+        )
+        testo_sfida = "Traduci in **polacco** questa frase:"
+        
     try:
         response = client.models.generate_content(
             model='gemini-3.8-flash',
             contents=prompt_generazione
         )
-        frase_it = response.text.strip()
+        frase_generata = response.text.strip()
         
-        sessions[message.chat.id] = {"sfida_it": frase_it}
+        session["sfida_testo"] = frase_generata
+        session["sfida_direzione"] = direzione
         
         msg = bot.send_message(
-            message.chat.id, 
-            f"🧠 **Sfida AI!** Traduci in polacco questa frase:\n\n_{frase_it}_\n\n(Usa i tuoi vocaboli per completarla. Digita 'q' per annullare).", 
+            chat_id, 
+            f"🧠 **Sfida AI!** {testo_sfida}\n\n_{frase_generata}_\n\n(Basata su: {', '.join(concetti)}.\nDigita 'q' per annullare).", 
             parse_mode="Markdown"
         )
         bot.register_next_step_handler(msg, check_ai_translation)
         
     except Exception as e:
         if "503" in str(e):
-            bot.send_message(message.chat.id, "⚠️ I server dell'AI sono momentaneamente saturi. Attendi qualche minuto e riprova.")
+            bot.send_message(chat_id, "⚠️ I server dell'AI sono momentaneamente saturi. Attendi qualche minuto e riprova.")
         else:
-            bot.send_message(message.chat.id, f"Errore di comunicazione con l'AI: {e}")
+            bot.send_message(chat_id, f"Errore di comunicazione con l'AI: {e}")
 
 def check_ai_translation(message):
     chat_id = message.chat.id
     user_translation = message.text.strip()
-    frase_it = sessions.get(chat_id, {}).get("sfida_it", "")
+    session = sessions.get(chat_id, {})
+    frase_originale = session.get("sfida_testo", "")
+    direzione = session.get("sfida_direzione", "it_to_pl")
     
     if user_translation.lower() == 'q':
         bot.send_message(chat_id, "Sfida annullata.")
         return
         
-    bot.send_message(chat_id, "🤖 Analisi grammaticale in corso...")
+    bot.send_message(chat_id, "🤖 Analisi in corso...")
     bot.send_chat_action(chat_id, 'typing')
     
-    prompt_correzione = (
-        f"Agisci come un insegnante di polacco. La frase originale da tradurre in polacco era: '{frase_it}'. "
-        f"Lo studente ha scritto: '{user_translation}'. Valuta la correttezza, segnala in modo oggettivo "
-        f"gli errori grammaticali o di declinazione e fornisci la traduzione perfetta. "
-        f"Mantieni il feedback rigoroso, analitico e conciso (massimo 4 righe)."
-    )
+    if direzione == "pl_to_it":
+        prompt_correzione = (
+            f"Agisci come un insegnante di polacco. La frase originale in polacco era: '{frase_originale}'. "
+            f"Lo studente ha tradotto in italiano scrivendo: '{user_translation}'. "
+            f"Valuta la correttezza della comprensione, segnala eventuali errori di interpretazione e fornisci la traduzione perfetta in italiano. "
+            f"Mantieni il feedback rigoroso, analitico e conciso (massimo 4 righe)."
+        )
+    else:
+        prompt_correzione = (
+            f"Agisci come un insegnante di polacco. La frase originale in italiano era: '{frase_originale}'. "
+            f"Lo studente ha tradotto in polacco scrivendo: '{user_translation}'. "
+            f"Valuta la correttezza, segnala in modo oggettivo gli errori grammaticali o di declinazione e fornisci la traduzione perfetta in polacco. "
+            f"Mantieni il feedback rigoroso, analitico e conciso (massimo 4 righe)."
+        )
     
     try:
         response = client.models.generate_content(
