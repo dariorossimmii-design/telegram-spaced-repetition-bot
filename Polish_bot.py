@@ -1,19 +1,27 @@
-import telebot
-import json
 import os
+import json
 import random
 import unicodedata
+import telebot
 from gtts import gTTS
 from telebot.types import ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
+from google import genai
 
-# The token is securely fetched from the environment variables
-TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', 'YOUR_TOKEN_HERE')
+# --- CONFIGURAZIONE E SICUREZZA ---
+# Le chiavi vengono estratte dalle variabili d'ambiente del server.
+# Il secondo parametro è un fallback testuale. NON inserire chiavi reali nel codice su GitHub.
+TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', 'INSERISCI_IL_TUO_TOKEN_TELEGRAM')
 bot = telebot.TeleBot(TOKEN)
+
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', 'INSERISCI_LA_TUA_CHIAVE_GEMINI')
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 CSV_FILE = "vocaboli_pl.csv"
 PROGRESS_FILE = "progress.json"
 
 sessions = {}
+
+# --- FUNZIONI DI SUPPORTO ---
 
 def load_data():
     vocab_db = {}
@@ -26,7 +34,7 @@ def load_data():
                     pl, lezione = parts[0].strip(), parts[-1].strip()
                     it = ",".join(parts[1:-1]).strip()
                     vocab_db[pl] = {"it": it, "level": 0, "lezione": lezione}
-
+                    
     if os.path.exists(PROGRESS_FILE):
         with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
             progress_data = json.load(f)
@@ -49,7 +57,6 @@ def check_answer_strict(user_input, correct_answer):
     return False, "errato"
 
 def get_audio_markup(pl_word):
-    """Genera il pulsante inline per la pronuncia audio."""
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("🔊 Ascolta pronuncia", callback_data=f"audio_{pl_word}"))
     return markup
@@ -62,12 +69,12 @@ def start_quiz(message):
     if not db:
         bot.send_message(message.chat.id, "Nessun database trovato.")
         return
-
+        
     lezioni_uniche = list(set(v["lezione"] for v in db.values()))
     lezioni_disp = sorted(lezioni_uniche, key=lambda x: (0, int(x)) if x.isdigit() else (1, x))
-
+    
     msg = bot.send_message(
-        message.chat.id,
+        message.chat.id, 
         f"Lezioni disponibili: {', '.join(lezioni_disp)}\n\nQuali vuoi ripassare? (es. 1, 1,3 oppure tutte)",
         reply_markup=ReplyKeyboardRemove()
     )
@@ -75,13 +82,13 @@ def start_quiz(message):
 
 def process_lesson(message, db):
     scelta = message.text.strip().lower()
-
+    
     if not scelta or scelta == 'tutte':
         selected = list(db.keys())
     else:
         scelte = [s.strip() for s in scelta.split(',')]
         selected = [pl for pl, data in db.items() if data["lezione"] in scelte]
-
+    
     if not selected:
         bot.send_message(message.chat.id, "Lezione non trovata. Scrivi /quiz per riprovare.")
         return
@@ -100,21 +107,21 @@ def start_new_round(chat_id):
     session = sessions[chat_id]
     db = session["db"]
     selected = session["selected"]
-
+    
     to_study = {k: db[k] for k in selected if db[k]["level"] < 3}
-
+    
     if not to_study:
         bot.send_message(chat_id, "Obiettivo raggiunto per questa selezione! 🎉\nScrivi /quiz per ripassare altre lezioni.", reply_markup=ReplyKeyboardRemove())
         return
-
+        
     batch = list(to_study.items())
     random.shuffle(batch)
     batch = batch[:15]
-
+    
     session["batch"] = batch
     session["current_idx"] = 0
     session["last_pl"] = None
-
+    
     bot.send_message(chat_id, f"--- Inizio round ({len(batch)} vocaboli) ---\nScrivi 'q' per uscire.", reply_markup=ReplyKeyboardRemove())
     ask_next_word(chat_id)
 
@@ -122,23 +129,23 @@ def ask_next_word(chat_id):
     session = sessions.get(chat_id)
     if not session or session["current_idx"] >= len(session["batch"]):
         if session: save_progress(session["db"])
-
+        
         markup = ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
         markup.add("Sì", "No")
         msg = bot.send_message(chat_id, "Round completato! Dati salvati.\nVuoi fare un altro round con queste lezioni?", reply_markup=markup)
         bot.register_next_step_handler(msg, handle_next_round)
         return
-
+        
     pl, data = session["batch"][session["current_idx"]]
     session["last_pl"] = pl
-
+    
     if data["level"] == 0 and not session["skip_mcq"]:
         options = random.sample([k for k in session["db"].keys() if k != pl], min(3, len(session["db"])-1)) + [pl]
         random.shuffle(options)
-
+        
         markup = ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
         for opt in options: markup.add(opt)
-
+        
         msg = bot.send_message(chat_id, f"Traduci (Liv. 0/3): {data['it']}", reply_markup=markup)
         bot.register_next_step_handler(msg, check_mcq)
     else:
@@ -158,16 +165,16 @@ def check_mcq(message):
         save_progress(sessions[chat_id]["db"])
         bot.send_message(chat_id, "Sessione interrotta e salvata.", reply_markup=ReplyKeyboardRemove())
         return
-
+        
     session = sessions[chat_id]
     pl = session["last_pl"]
-
+    
     if message.text.strip() == pl:
         bot.send_message(chat_id, "🟢 Corretto.", reply_markup=get_audio_markup(pl))
         session["db"][pl]["level"] += 1
     else:
         bot.send_message(chat_id, f"🔴 Errato. La risposta era: {pl}", reply_markup=get_audio_markup(pl))
-
+        
     session["current_idx"] += 1
     ask_next_word(chat_id)
 
@@ -177,10 +184,10 @@ def check_typing(message):
         save_progress(sessions[chat_id]["db"])
         bot.send_message(chat_id, "Sessione interrotta e salvata.")
         return
-
+        
     session = sessions[chat_id]
     pl = session["last_pl"]
-
+    
     is_exact, status = check_answer_strict(message.text, pl)
     if is_exact:
         bot.send_message(chat_id, "🟢 Corretto.", reply_markup=get_audio_markup(pl))
@@ -192,7 +199,7 @@ def check_typing(message):
             bot.send_message(chat_id, f"🟠 Errore sui diacritici! Scritto: '{message.text}', Esatto: '{pl}'")
         else:
             bot.send_message(chat_id, f"🔴 Errato. Esatto: {pl}")
-
+            
         markup = ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
         markup.add("S", "No")
         msg = bot.send_message(chat_id, "Premi 'S' se era un typo per forzare la correttezza, altrimenti 'No'.", reply_markup=markup)
@@ -202,14 +209,14 @@ def check_override(message):
     chat_id = message.chat.id
     session = sessions[chat_id]
     pl = session["last_pl"]
-
+    
     if message.text.strip().lower() == 's':
         session["db"][pl]["level"] += 1
         bot.send_message(chat_id, "✅ Forzatura applicata.", reply_markup=get_audio_markup(pl))
     else:
         session["db"][pl]["level"] = 0
         bot.send_message(chat_id, "❌ Errore confermato.", reply_markup=get_audio_markup(pl))
-
+        
     session["current_idx"] += 1
     ask_next_word(chat_id)
 
@@ -228,15 +235,15 @@ def start_add_vocab(message):
 def process_add_lesson(message):
     chat_id = message.chat.id
     lezione = message.text.strip()
-
+    
     if lezione.lower() == 'q':
         bot.send_message(chat_id, "Operazione annullata.")
         return
-
+        
     sessions[chat_id] = {"add_lesson": lezione}
-
+    
     msg = bot.send_message(
-        chat_id,
+        chat_id, 
         f"Perfetto, aggiungiamo alla lezione **{lezione}**.\n\nScrivi il termine in **polacco**:\n*(Oppure digita 'q' per terminare)*",
         parse_mode="Markdown"
     )
@@ -245,29 +252,29 @@ def process_add_lesson(message):
 def process_add_pl(message):
     chat_id = message.chat.id
     pl = message.text.strip()
-
+    
     if pl.lower() == 'q':
         bot.send_message(chat_id, "Inserimento terminato. Usa /quiz per studiare.")
         return
-
+        
     db = load_data()
     duplicato = None
-
+    
     for parola_esistente in db.keys():
         if parola_esistente.lower() == pl.lower():
             duplicato = parola_esistente
             break
-
+            
     if duplicato:
         dati = db[duplicato]
         msg = bot.send_message(
-            chat_id,
+            chat_id, 
             f"⚠️ **Attenzione!**\nIl termine **{duplicato}** esiste già nella **Lezione {dati['lezione']}** (Traduzione: *{dati['it']}*).\n\nScrivi un **altro termine in polacco** (oppure 'q' per chiudere):",
             parse_mode="Markdown"
         )
         bot.register_next_step_handler(msg, process_add_pl)
         return
-
+        
     sessions[chat_id]["new_pl"] = pl
     msg = bot.send_message(chat_id, f"Scrivi la traduzione in **italiano** per '{pl}':", parse_mode="Markdown")
     bot.register_next_step_handler(msg, process_add_it)
@@ -275,25 +282,25 @@ def process_add_pl(message):
 def process_add_it(message):
     chat_id = message.chat.id
     it = message.text.strip()
-
+    
     if it.lower() == 'q':
         bot.send_message(chat_id, "Inserimento terminato. Usa /quiz per studiare.")
         return
-
+        
     pl = sessions[chat_id].get("new_pl")
     lezione = sessions[chat_id].get("add_lesson")
-
+    
     try:
         with open(CSV_FILE, "a", encoding="utf-8") as f:
             f.write(f"\n{pl},{it},{lezione}")
-
+            
         msg = bot.send_message(
-            chat_id,
+            chat_id, 
             f"✅ Salvato: **{pl}** = **{it}**\n\nScrivi il **prossimo termine in polacco** (oppure 'q' per chiudere):",
             parse_mode="Markdown"
         )
         bot.register_next_step_handler(msg, process_add_pl)
-
+        
     except Exception as e:
         bot.send_message(chat_id, f"Errore durante il salvataggio: {e}")
 
@@ -330,7 +337,7 @@ def confirm_reset_lessons(message, db):
     else:
         scelte = [s.strip() for s in scelta.split(',')]
         valid_lessons = list(set([l for l in scelte if any(v["lezione"] == l for v in db.values())]))
-
+        
         if not valid_lessons:
             bot.send_message(chat_id, "Nessuna lezione valida trovata. Reset annullato.")
             return
@@ -368,16 +375,100 @@ def execute_reset(message):
                 if data["lezione"] in selected_lessons:
                     db[pl]["level"] = 0
                     modificati += 1
-
+            
             save_progress(db)
             bot.send_message(
-                chat_id,
-                f"🗑️ **Progressi azzerati per le lezioni: {', '.join(selected_lessons)}**.\n({modificati} vocaboli ripristinati al Livello 0).",
-                reply_markup=ReplyKeyboardRemove(),
+                chat_id, 
+                f"🗑️ **Progressi azzerati per le lezioni: {', '.join(selected_lessons)}**.\n({modificati} vocaboli ripristinati al Livello 0).", 
+                reply_markup=ReplyKeyboardRemove(), 
                 parse_mode="Markdown"
             )
     else:
         bot.send_message(chat_id, "Operazione annullata. I tuoi progressi sono salvi.", reply_markup=ReplyKeyboardRemove())
+
+# --- SEZIONE SFIDA AI (GEMINI) ---
+
+@bot.message_handler(commands=['sfida', 'ai'])
+def start_ai_challenge(message):
+    db = load_data()
+    
+    parole_conosciute = [data["it"] for pl, data in db.items() if data["level"] >= 2]
+    
+    if len(parole_conosciute) < 3:
+        bot.send_message(message.chat.id, "⚠️ Non hai ancora abbastanza vocaboli al Livello 2 o 3. Fai un po' di /quiz prima di sfidare l'AI!")
+        return
+        
+    bot.send_message(message.chat.id, "🤖 Generazione della sfida in corso...")
+    bot.send_chat_action(message.chat.id, 'typing')
+    
+    vocaboli_sfida = random.sample(parole_conosciute, 3)
+    
+    prompt_generazione = (
+        f"Agisci come un insegnante di polacco per uno studente principiante (livello A1). "
+        f"Crea una singola frase molto semplice in italiano (massimo 6-8 parole) che includa "
+        f"obbligatoriamente questi tre concetti: {', '.join(vocaboli_sfida)}. "
+        f"Rispondi fornendo la frase in italiano sulla prima riga. "
+        f"Dalla seconda riga in poi, crea un '📌 Aiuto Vocabolario' in cui fornisci la traduzione in polacco "
+        f"esclusivamente per i termini extra che hai usato (verbi ausiliari, preposizioni, altri sostantivi). "
+        f"Non tradurre i tre concetti obbligatori che lo studente deve già conoscere."
+    )
+    
+    try:
+        response = client.models.generate_content(
+            model='gemini-3.8-flash',
+            contents=prompt_generazione
+        )
+        frase_it = response.text.strip()
+        
+        sessions[message.chat.id] = {"sfida_it": frase_it}
+        
+        msg = bot.send_message(
+            message.chat.id, 
+            f"🧠 **Sfida AI!** Traduci in polacco questa frase:\n\n_{frase_it}_\n\n(Usa i tuoi vocaboli per completarla. Digita 'q' per annullare).", 
+            parse_mode="Markdown"
+        )
+        bot.register_next_step_handler(msg, check_ai_translation)
+        
+    except Exception as e:
+        if "503" in str(e):
+            bot.send_message(message.chat.id, "⚠️ I server dell'AI sono momentaneamente saturi. Attendi qualche minuto e riprova.")
+        else:
+            bot.send_message(message.chat.id, f"Errore di comunicazione con l'AI: {e}")
+
+def check_ai_translation(message):
+    chat_id = message.chat.id
+    user_translation = message.text.strip()
+    frase_it = sessions.get(chat_id, {}).get("sfida_it", "")
+    
+    if user_translation.lower() == 'q':
+        bot.send_message(chat_id, "Sfida annullata.")
+        return
+        
+    bot.send_message(chat_id, "🤖 Analisi grammaticale in corso...")
+    bot.send_chat_action(chat_id, 'typing')
+    
+    prompt_correzione = (
+        f"Agisci come un insegnante di polacco. La frase originale da tradurre in polacco era: '{frase_it}'. "
+        f"Lo studente ha scritto: '{user_translation}'. Valuta la correttezza, segnala in modo oggettivo "
+        f"gli errori grammaticali o di declinazione e fornisci la traduzione perfetta. "
+        f"Mantieni il feedback rigoroso, analitico e conciso (massimo 4 righe)."
+    )
+    
+    try:
+        response = client.models.generate_content(
+            model='gemini-3.8-flash',
+            contents=prompt_correzione
+        )
+        feedback = response.text.strip()
+        
+        bot.send_message(chat_id, f"📝 **Esito:**\n{feedback}", parse_mode="Markdown")
+        bot.send_message(chat_id, "Usa /sfida per una nuova frase o /quiz per il ripasso standard.")
+        
+    except Exception as e:
+        if "503" in str(e):
+            bot.send_message(chat_id, "⚠️ I server dell'AI sono momentaneamente saturi. Attendi qualche minuto e riprova.")
+        else:
+            bot.send_message(chat_id, f"Errore durante la correzione: {e}")
 
 # --- GESTORE AUDIO (CALLBACK) ---
 
@@ -385,18 +476,18 @@ def execute_reset(message):
 def send_pronunciation(call):
     pl_word = call.data.replace('audio_', '')
     bot.send_chat_action(call.message.chat.id, 'record_voice')
-
+    
     try:
         tts = gTTS(text=pl_word, lang='pl')
         audio_file = f"temp_{call.message.chat.id}.ogg"
         tts.save(audio_file)
-
+        
         with open(audio_file, 'rb') as f:
             bot.send_voice(call.message.chat.id, f)
         os.remove(audio_file)
     except Exception as e:
         bot.send_message(call.message.chat.id, "Errore nella generazione dell'audio.")
-
+    
     bot.answer_callback_query(call.id)
 
 if __name__ == "__main__":
